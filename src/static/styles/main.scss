@@ -1,0 +1,16 @@
+@import 'bootstrap.css';
+// can add Boostrap overrides, additional Sass/CSS below...
+
+.key {
+  color: #fff;
+  border: 1px #000 solid;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.calc-screen {
+  word-break: break-word;
+  color: #fff;
+  overflow-y: scroll;
+}
