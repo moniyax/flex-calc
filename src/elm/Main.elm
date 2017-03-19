@@ -21,7 +21,7 @@ main =
 
 type alias Model =
     { keyLog : List Key
-    , result : Maybe Float
+    , result : Maybe String
     , buffer : List Key
     }
 
@@ -29,7 +29,7 @@ type Op =
     Divide | Plus | Times | Minus | Equal | Percent | ToggleSign | Clear
 
 type Key =
-    Op Op | Num Float | DotKey
+    Op Op | Num Float | DotKey | ZeroDot
 
 init : (Model, Cmd Msg)
 init =
@@ -48,21 +48,15 @@ type Msg = LogKey Key
 update : Msg -> Model -> (Model, Cmd Msg)
 update msg model =
   case msg of
-    LogKey key -> (updateOnLogKey key model, Cmd.none)
+    LogKey key ->
+        (updateOnLogKey key model, Cmd.none)
 
 updateOnLogKey : Key -> Model -> Model
 updateOnLogKey key model =
-    let newKeyLog = key :: model.keyLog
-        model1 = { model | keyLog = newKeyLog }
-        (result, buffer) = runCalc model1
+    let model1 = { model | keyLog = key :: model.keyLog }
+        buffer = runCalc model1
+        result = Maybe.map bar <| firstNum buffer
     in { model1 | result = result, buffer = buffer}
-
-
-runCalc : Model -> (Maybe Float, List Key)
-runCalc model =
-    let buffer = List.foldr funk [] model.keyLog
-    in (Maybe.map bar <| firstNum buffer, buffer)
-
 
 firstNum : List Key -> Maybe Key
 firstNum ks =
@@ -73,29 +67,32 @@ f next acc =
     case (acc, next) of
         (Just num, _) -> Just num
         (Nothing, Num n) -> Just <| Num n
+        (Nothing, ZeroDot) -> Just <| ZeroDot
         _            -> Nothing
 
-bar : Key -> Float
+bar : Key -> String
 bar key =
     case key of
-        (Num n) -> n
-        _       -> 0
+        (Num n) -> toString n
+        ZeroDot -> "0."
+        _       -> "0"
 
+runCalc : Model -> List Key
+runCalc model =
+    List.foldr funk [] model.keyLog
 
 funk : Key -> List Key -> List Key
 funk key buffer =
     case (key, buffer) of
         (Op _, []) -> []
         (Num x, []) -> [Num x]
+        (DotKey, []) -> [ZeroDot]
         (Num x, Num y :: tl) ->
-            (Num
-            <| toFloat
-            <| Result.withDefault 0
-            <| String.toInt
-            <| toString y ++ toString x) :: tl
+            concatNums (Num x) (Num y) tl
+        (Num x, ZeroDot :: tl) ->
+            concatNums (Num x) ZeroDot tl
         (Op op, [Num x]) ->
-            evalUnary [Op op, Num x] -- check for equal etc. cases
-        (Op op_, [Op op, Num x]) -> [Op op_, Num x]
+            evalUnary [Op op, Num x] -- check for equal etc. ca_, [Op op, Num x]) -> [Op op_, Num x]
         (Num y, [Op op, Num x]) ->
             case op of
                 Equal -> [Num y]
@@ -103,6 +100,21 @@ funk key buffer =
         (Op op, [Num y, Op op_, Num x]) ->
              eval op [Num y, Op op_, Num x]
         _ -> buffer
+
+concatNums : Key -> Key -> List Key -> List Key
+concatNums num1 num2 tl =
+    case (num1, num2) of
+        (Num x, Num y) ->
+            let newNum =
+                (Num
+                <| toFloat
+                <| Result.withDefault 0
+                <| String.toInt
+                <| toString y ++ toString x)
+            in newNum :: tl
+        (Num x, ZeroDot) ->
+            [Num (0.1 * x)]
+        _ -> [Num 0] -- shouldn't get here. We dealing with nums here!
 
 evalUnary : List Key -> List Key
 evalUnary keys =
@@ -118,14 +130,14 @@ eval op keys =
     let res = calc keys
     in
     case op of
-        Plus  -> [Op op, res]
-        Minus  -> [Op op, res]
+        Plus    -> [Op op, res]
+        Minus   -> [Op op, res]
         Divide  -> [Op op, res]
-        Times  -> [Op op, res]
-        Equal -> [Op op, res]
+        Times   -> [Op op, res]
+        Equal   -> [Op op, res]
         Percent -> [percentOfNum res]
         ToggleSign -> [toggleSignOfNum res]
-        Clear -> case List.tail keys of
+        Clear   -> case List.tail keys of
                     Just v -> v
                     Nothing -> [] -- shouldn't get here cos in funk an op before an empty list is not possible
 
@@ -161,15 +173,14 @@ calcButton value key =
             Num 0 -> "w-50"
             _     -> "w-25"
     in
-    button [ class <| "btn btn-primary h-25 key rounded-0 " ++ widthClass
+    button [ class <| "btn btn-success h-25 key rounded-0 " ++ widthClass
            , onClick <| LogKey <| key ]
            [ text value ]
 
 
 view : Model -> Html Msg
 view model =
-    let output = toString
-                 <| Maybe.withDefault 0
+    let output = Maybe.withDefault "0"
                  <| model.result
     in
     div [class "calc-body d-flex flex-column h-100 w-25"]
