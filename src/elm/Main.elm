@@ -1,8 +1,8 @@
 module Main exposing (..)
+
 import Html exposing (..)
 import Html.Attributes exposing (..)
 import Html.Events exposing ( onClick )
-
 
 -- APP
 
@@ -22,14 +22,20 @@ main =
 type alias Model =
     { keyLog : List Key
     , result : Maybe String
-    , buffer : List Key
+    , buffer : Buffer
     }
 
 type Op =
     Divide | Plus | Times | Minus | Equal | Percent | ToggleSign | Clear
 
 type Key =
-    Op Op | Num Float | DotKey | ZeroDot
+    OpKey Op | NumKey Float | DotKey
+
+type Arith =
+    Op Op | Num Float | NumDot Float | ZeroDot
+
+type alias Buffer = List Arith
+type alias KeyLog = List Key
 
 init : (Model, Cmd Msg)
 init =
@@ -58,74 +64,125 @@ updateOnLogKey key model =
         result = Maybe.map bar <| firstNum buffer
     in { model1 | result = result, buffer = buffer}
 
-firstNum : List Key -> Maybe Key
-firstNum ks =
-    List.foldl f Nothing ks
+firstNum : Buffer -> Maybe Arith
+firstNum vals =
+    List.foldl f Nothing vals
 
-f : Key -> Maybe Key -> Maybe Key
+f : Arith -> Maybe Arith -> Maybe Arith
 f next acc =
     case (acc, next) of
         (Just num, _) -> Just num
         (Nothing, Num n) -> Just <| Num n
         (Nothing, ZeroDot) -> Just <| ZeroDot
+        (Nothing, NumDot n) -> Just <| NumDot n
         _            -> Nothing
 
-bar : Key -> String
-bar key =
-    case key of
-        (Num n) -> toString n
-        ZeroDot -> "0."
-        _       -> "0"
+bar : Arith -> String
+bar val =
+    case val of
+        Num n       -> toString n
+        ZeroDot     -> "0."
+        NumDot n    -> toString n ++ "."
+        _           -> "0"
 
-runCalc : Model -> List Key
+runCalc : Model -> Buffer
 runCalc model =
     List.foldr funk [] model.keyLog
 
-funk : Key -> List Key -> List Key
+updateFirstNumInBuffer : (Arith -> Arith) -> Buffer -> Buffer
+updateFirstNumInBuffer f buffer =
+    let foo val acc =
+            case (val, acc) of
+                (Num x, (vals, Nothing)) ->
+                    ((f <| Num x) :: vals, Just <| Num x)
+                (val, (vals, maybe)) ->
+                    (val :: vals, maybe)
+    in case List.foldr foo ([], Nothing) buffer of
+            (newBuffer, _) -> newBuffer
+
+funk : Key -> Buffer -> Buffer
 funk key buffer =
     case (key, buffer) of
-        (Op _, []) -> []
-        (Num x, []) -> [Num x]
-        (DotKey, []) -> [ZeroDot]
-        (Num x, Num y :: tl) ->
-            concatNums (Num x) (Num y) tl
-        (Num x, ZeroDot :: tl) ->
-            concatNums (Num x) ZeroDot tl
-        (Op op, [Num x]) ->
-            evalUnary [Op op, Num x] -- check for equal etc. ca_, [Op op, Num x]) -> [Op op_, Num x]
-        (Num y, [Op op, Num x]) ->
+        -- (DotKey  , buffer)  ->
+        --     let addDotToNum num =
+        --         case num of
+        --             (Num x) ->  if String.contains "." (toString x) then
+        --                             Num x
+        --                         else
+        --                             Num
+        --                             <| Result.withDefault 0
+        --                             <| String.toFloat
+        --                             <| toString x ++ "."
+        --             _       ->  Num 9999 -- Shouldn't get here. We onl matching Nums.
+        --     in  updateFirstNumInBuffer addDotToNum buffer
+        (DotKey  , [])      -> [ZeroDot]
+        (DotKey, Num x :: tl) -> NumDot x :: tl
+        (DotKey, NumDot x :: tl) -> NumDot x :: tl
+        (DotKey, [Op op, Num x]) ->
+            case op of
+                Equal -> [ZeroDot]
+                _     -> [ZeroDot, Op op, Num x]
+        --
+        (DotKey, Op op :: tl) -> ZeroDot :: Op op :: tl
+        (DotKey, ZeroDot :: tl) -> ZeroDot :: tl
+
+        (NumKey x, [])              -> [Num x]
+        (NumKey x, NumDot y :: tl)  ->
+            (Num <| Result.withDefault 0
+                 <| String.toFloat
+                 <| toString y ++ "." ++ toString x) :: tl
+        (NumKey x, Num y :: tl)  ->
+            (concatNums (Num x) (Num y)) :: tl
+        (NumKey x, ZeroDot :: tl)  ->
+            (concatNums (Num x) ZeroDot) :: tl
+        (NumKey y, [Op op, Num x]) ->
             case op of
                 Equal -> [Num y]
                 _     -> [Num y, Op op, Num x]
-        (Op op, [Num y, Op op_, Num x]) ->
+
+        (OpKey _ , [])      -> []
+        (OpKey op, Op Equal :: tl) ->
+            Op op :: tl
+        (OpKey op, [ZeroDot]) ->
+            evalUnary [Op op, Num 0]
+        (OpKey op, [ZeroDot, Op op_, Num x]) ->
+             eval op [Num 0, Op op_, Num x]
+        (OpKey op, [NumDot x]) ->
+            evalUnary [Op op, Num x]
+        (OpKey op, [NumDot x, Op op_, Num y]) ->
+             eval op [Num x, Op op_, Num y]
+        (OpKey op, [Num x]) ->
+            evalUnary [Op op, Num x] -- check for equal etc.
+
+        (OpKey op, [Num y, Op op_, Num x]) ->
              eval op [Num y, Op op_, Num x]
         _ -> buffer
 
-concatNums : Key -> Key -> List Key -> List Key
-concatNums num1 num2 tl =
+concatNums : Arith -> Arith -> Arith
+concatNums num1 num2 =
     case (num1, num2) of
         (Num x, Num y) ->
-            let newNum =
-                (Num
-                <| toFloat
-                <| Result.withDefault 0
-                <| String.toInt
-                <| toString y ++ toString x)
-            in newNum :: tl
+            Num
+            <| Result.withDefault 0
+            <| String.toFloat
+            <| toString y ++ toString x
         (Num x, ZeroDot) ->
-            [Num (0.1 * x)]
-        _ -> [Num 0] -- shouldn't get here. We dealing with nums here!
+            Num
+            <| Result.withDefault 0
+            <| String.toFloat
+            <| "0." ++ toString x
+        _ -> Num 0 -- shouldn't get here. We dealing with nums here!
 
-evalUnary : List Key -> List Key
-evalUnary keys =
-    case keys of
-        [Op Percent, Num x] -> [Num <| x / 100]
-        [Op ToggleSign, Num x] -> [Num <| -1 * x]
-        [Op Equal, Num x] -> [Num x]
+evalUnary : Buffer -> Buffer
+evalUnary vals =
+    case vals of
+        [Op Percent, Num x]     -> [Num <| x / 100]
+        [Op ToggleSign, Num x]  -> [Num <| -1 * x]
+        [Op Equal, Num x] -> [Op Equal, Num x]
         [Op Clear, Num x] -> []
-        _                 -> keys
+        _                 -> vals
 
-eval : Op -> List Key -> List Key
+eval : Op -> Buffer -> Buffer
 eval op keys =
     let res = calc keys
     in
@@ -141,26 +198,27 @@ eval op keys =
                     Just v -> v
                     Nothing -> [] -- shouldn't get here cos in funk an op before an empty list is not possible
 
-percentOfNum : Key -> Key
+calc : Buffer -> Arith
+calc keys =
+    case keys of
+        [Num y, Op Plus, Num x]     -> Num <| x + y
+        [Num y, Op Minus, Num x]    -> Num <| x - y
+        [Num y, Op Divide, Num x]   -> Num <| x / y
+        [Num y, Op Times, Num x]    -> Num <| x * y
+        _ -> Num 1 -- shouldn't get here cos unary ops can't be sandmitched betwenn two numbers
+
+percentOfNum : Arith -> Arith
 percentOfNum k =
             case k of
                 Num n -> Num <| n / 100
                 _ -> k -- Better to have a Num type so I don't have to do this.
 
-toggleSignOfNum : Key -> Key
+toggleSignOfNum : Arith -> Arith
 toggleSignOfNum k =
             case k of
                 Num n -> Num <| -1 * n
                 _ -> k -- Better to have a Num type so I don't have to do this.
 
-calc : List Key -> Key
-calc keys =
-    case keys of
-        [Num y, Op Plus, Num x] -> Num <| x + y
-        [Num y, Op Minus, Num x] -> Num <| x - y
-        [Num y, Op Divide, Num x] -> Num <| x / y
-        [Num y, Op Times, Num x] -> Num <| x * y
-        _ -> Num 1 -- shouldn't get here cos unary ops can't be sandmitched betwenn two numbers
 
 
 -- VIEW
@@ -170,8 +228,8 @@ calcButton : String -> Key -> Html Msg
 calcButton value key =
     let widthClass =
         case key of
-            Num 0 -> "w-50"
-            _     -> "w-25"
+            NumKey 0 -> "w-50"
+            _        -> "w-25"
     in
     button [ class <| "btn btn-success h-25 key rounded-0 " ++ widthClass
            , onClick <| LogKey <| key ]
@@ -189,24 +247,24 @@ view model =
                 [ text output ]
         ,   div [class "calc-keyboard align-content-start d-flex flex-wrap h-75 w-100"]
                 [
-                    calcButton "C" <| Op Clear
-                ,   calcButton "+/-" <| Op ToggleSign
-                ,   calcButton "%" <| Op Percent
-                ,   calcButton "÷" <| Op Divide
-                ,   calcButton "7" <| Num 7
-                ,   calcButton "8" <| Num 8
-                ,   calcButton "9" <| Num 9
-                ,   calcButton "×" <| Op Times
-                ,   calcButton "4" <| Num 4
-                ,   calcButton "5" <| Num 5
-                ,   calcButton "6" <| Num 6
-                ,   calcButton "-" <| Op Minus
-                ,   calcButton "1" <| Num 1
-                ,   calcButton "2" <| Num 2
-                ,   calcButton "3" <| Num 3
-                ,   calcButton "+" <| Op Plus
-                ,   calcButton "0" <| Num 0
+                    calcButton "C" <| OpKey Clear
+                ,   calcButton "+/-" <| OpKey ToggleSign
+                ,   calcButton "%" <| OpKey Percent
+                ,   calcButton "÷" <| OpKey Divide
+                ,   calcButton "7" <| NumKey 7
+                ,   calcButton "8" <| NumKey 8
+                ,   calcButton "9" <| NumKey 9
+                ,   calcButton "×" <| OpKey Times
+                ,   calcButton "4" <| NumKey 4
+                ,   calcButton "5" <| NumKey 5
+                ,   calcButton "6" <| NumKey 6
+                ,   calcButton "-" <| OpKey Minus
+                ,   calcButton "1" <| NumKey 1
+                ,   calcButton "2" <| NumKey 2
+                ,   calcButton "3" <| NumKey 3
+                ,   calcButton "+" <| OpKey Plus
+                ,   calcButton "0" <| NumKey 0
                 ,   calcButton "." <| DotKey
-                ,   calcButton "=" <| Op Equal
+                ,   calcButton "=" <| OpKey Equal
                 ]
         ]
