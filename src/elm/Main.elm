@@ -31,10 +31,10 @@ type Unary = Equal | Percent | ToggleSign | Clear | AllClear
 type Binary = Divide | Plus | Times | Minus
 type Op = UnOp Unary | BinaryOp Binary
 
-type Key = OpKey Op | NumKey Float | DotKey
+type Key = OpKey Op | NumKey Int | DotKey
 
 type Arith =
-    Op Op | Num Float | NumDot Float | ZeroDot | TempRes Float
+    Op Op | Num Float | NumDot String (Maybe String) | TempRes Float
 
 type alias Buffer = List Arith
 
@@ -80,25 +80,22 @@ firstNum : Buffer -> Maybe Arith
 firstNum vals =
     let f next acc =
         case (acc, next) of
-            (Just num, _) -> Just num
-            (Nothing, Num n) -> Just <| Num n
-            (Nothing, ZeroDot) -> Just <| ZeroDot
-            (Nothing, NumDot n) -> Just <| NumDot n
-            (Nothing, TempRes n) -> Just <| TempRes n
-            _            -> Nothing
-    in
-    List.foldl f Nothing vals
-
--- f : Arith -> Maybe Arith -> Maybe Arith
+            (Just num, _)           -> Just num
+            (Nothing, Num n)        -> Just <| Num n
+            -- (Nothing, ZeroDot)   -> Just <| ZeroDot
+            (Nothing, NumDot a b)   -> Just <| NumDot a b
+            (Nothing, TempRes n)    -> Just <| TempRes n
+            _                       -> Nothing
+    in List.foldl f Nothing vals
 
 display : Arith -> String
 display val =
     case val of
         Num n       -> toString n
-        ZeroDot     -> "0."
-        NumDot n    -> toString n ++ "."
+        -- ZeroDot     -> "0."
+        NumDot a b  -> a ++ "." ++ (Maybe.withDefault "" b)
         TempRes n   -> toString n
-        _           -> "0"
+        Op _        -> Debug.crash "Only results can be displayed. Op cannot be a result."
 
 runCalc : Model -> Buffer
 runCalc model =
@@ -125,40 +122,39 @@ funk key buffer =
     case (key, buffer_) of
         (DotKey, bf)    ->
             case bf of
-                []              -> [ZeroDot]
-                Num x :: tl     -> NumDot x :: tl
-                ZeroDot :: tl   -> ZeroDot :: tl
-                NumDot x :: tl  -> NumDot x :: tl
-                TempRes _ :: tl -> ZeroDot :: tl
+                []              -> [NumDot "0" Nothing]
+                Num x :: tl     -> NumDot (toString x) Nothing :: tl
+                -- ZeroDot :: tl   -> ZeroDot :: tl
+                NumDot x y :: tl  -> NumDot x y :: tl
+                TempRes _ :: tl -> NumDot "0" Nothing :: tl
                 Op op :: tl     ->
                     case op of
-                        UnOp Equal   -> [ZeroDot]
-                        _               -> ZeroDot :: Op op :: tl
+                        UnOp Equal  -> [NumDot "0" Nothing]
+                        _           -> NumDot "0" Nothing :: Op op :: tl
         (NumKey x, bf)  ->
             case bf of
-                []              -> [Num x]
-                TempRes _ :: tl -> Num x :: tl
-                Num y :: tl     -> (concatNums (Num x) (Num y)) :: tl
-                ZeroDot :: tl   -> (concatNums (Num x) ZeroDot) :: tl
-
-                NumDot y :: tl  ->
+                []              -> [Num <| toFloat x]
+                TempRes _ :: tl -> (Num <| toFloat x) :: tl
+                Num y :: tl     ->
                     (Num <| Result.withDefault 0
-                         <| String.toFloat
-                         <| toString y ++ "." ++ toString x) :: tl
+                        <| String.toFloat
+                        <| toString y ++ toString x) :: tl
+                -- ZeroDot :: tl       -> NumDot 0 (Just x) :: tl
+                NumDot a b :: tl    -> NumDot a (Just <| Maybe.withDefault "" b ++ toString x) :: tl
                 Op op :: Num y :: tl  ->
                     case op of
-                        UnOp Equal -> [Num x]
-                        _     -> Num x :: Op op :: Num y :: tl
+                        UnOp Equal -> [Num <| toFloat x]
+                        _     -> (Num <| toFloat x) :: Op op :: Num y :: tl
                 [Op _] ->
                     Debug.crash "Invalid State: Buffer cannot have an Op as last element."
                 Op _ :: Op _ :: _ ->
                     Debug.crash "Invalid State: Two Ops cannot occur in sequence."
-                Op _ :: NumDot _ :: _ ->
+                Op _ :: NumDot _ _ :: _ ->
                     Debug.crash "Invalid State: A NumDot can only occur as first element of the buffer."
                 Op _ :: TempRes _ :: _ ->
                     Debug.crash "Invalid State: A TempRes can only occur as first element of the buffer."
-                Op _ :: ZeroDot :: _ ->
-                    Debug.crash "Invalid State: A ZeroDot can only occur as first element of the buffer."
+                -- Op _ :: ZeroDot :: _ ->
+                    -- Debug.crash "Invalid State: A ZeroDot can only occur as first element of the buffer."
         (OpKey op , bf)  ->
             case op of
                 UnOp AllClear -> []
@@ -166,28 +162,43 @@ funk key buffer =
                     case bf of
                         []             -> []
                         Num x :: tl    -> Op (UnOp Clear) :: tl
-                        NumDot _ :: tl -> Op (UnOp Clear) :: tl
-                        ZeroDot :: tl  -> Op (UnOp Clear) :: tl
+                        NumDot _ _ :: tl -> Op (UnOp Clear) :: tl
+                        -- ZeroDot :: tl  -> Op (UnOp Clear) :: tl
                         TempRes _ :: tl -> Op (UnOp Clear) :: tl
                         Op op :: tl    -> Op (UnOp Clear) :: Op op :: tl
                 _ ->
                     case bf of
                         []                          -> []
-                        [ZeroDot]                   -> eval [Op op, Num 0]
+                        -- [ZeroDot]                   -> eval [Op op, Num 0]
                         [Num x]                     -> eval [Op op, Num x]
-                        [NumDot x]                  -> eval [Op op, Num x]
+                        [NumDot a b]                ->
+                            eval [Op op, numDotToNum <| NumDot a b]
                         Op _ :: tl                  -> eval <| Op op :: tl
-                        ZeroDot :: Op op_ :: Num x :: tl    ->
-                            eval <| Op op :: Num 0 :: Op op_ :: Num x :: tl
-                        NumDot y :: Op op_ :: Num x :: tl   ->
-                            eval <| Op op :: Num y :: Op op_ :: Num x :: tl
-                        TempRes y :: Op op_ :: Num x :: tl ->
+                        -- ZeroDot :: Op op_ :: Num x :: tl    ->
+                            -- eval <| Op op :: Num 0 :: Op op_ :: Num x :: tl
+                        NumDot a b :: Op op_ :: Num x :: tl ->
+                            eval <| Op op :: (numDotToNum <| NumDot a b) :: Op op_ :: Num x :: tl
+                        TempRes y :: Op op_ :: Num x :: tl  ->
                             eval <| Op op :: Num y :: Op op_ :: Num x :: tl
                         Num _ :: Op _ :: _          -> eval <| Op op :: bf
                         Num _ :: _                  -> Debug.crash "Invalid State: Nums can only be followed by an Op."
-                        ZeroDot  :: _  -> Debug.crash "This ZeroDot form is invalid"
-                        NumDot _  :: _  -> Debug.crash "This NumDot form is invalid"
+                        -- ZeroDot  :: _  -> Debug.crash "This ZeroDot form is invalid"
+                        NumDot _ _ :: _  -> Debug.crash "This NumDot form is invalid"
                         TempRes _  :: _  -> Debug.crash "This TempRes form is invalid"
+
+numDotToNum :  Arith -> Arith
+numDotToNum numDot =
+    Num <|
+    case numDot of
+        NumDot a (Just b) ->
+            case String.toFloat <| a ++ "." ++ b of
+                Ok n -> n
+                Err msg -> Debug.crash msg
+        NumDot a Nothing ->
+            case String.toFloat a of
+                Ok n -> n
+                Err msg -> Debug.crash msg
+        _ -> Debug.crash "Only NumDots allowed here!"
 
 eval : Buffer -> Buffer
 eval buffer =
@@ -240,21 +251,6 @@ calcBinary expr =
             (Num y, Op (BinaryOp Minus), Num x)    -> x - y
             _                                      -> Debug.crash "Wrong structure."
 
-concatNums : Arith -> Arith -> Arith
-concatNums num1 num2 =
-    case (num1, num2) of
-        (Num x, Num y) ->
-            Num
-            <| Result.withDefault 0
-            <| String.toFloat
-            <| toString y ++ toString x
-        (Num x, ZeroDot) ->
-            Num
-            <| Result.withDefault 0
-            <| String.toFloat
-            <| "0." ++ toString x
-        _ -> Num 0 -- shouldn't get here. We dealing with nums here!
-
 
 -- VIEW
 
@@ -280,16 +276,16 @@ view model =
             div [class "calc-screen align-items-center bg-info bg-inverse d-flex h-25 justify-content-end p-1 pt-4 w-100"]
                 [ text output ]
         ,   div [class "calc-keyboard align-content-start d-flex flex-wrap h-75 w-100"]
-                <| List.map (labelToButton model)
+                <| List.map labelToButton
                             [toString model.clearType, "+/-" ,"%" ,"÷" ,"7" ,"8" ,"9" ,"×" ,"4" ,"5" ,"6" ,"-" ,"1" ,"2" ,"3" ,"+" ,"0" ,"." , "="]
         ]
 
-labelToButton : Model -> String -> Html Msg
-labelToButton model label =
-    calcButton label <| labelKey model label
+labelToButton : String -> Html Msg
+labelToButton label =
+    calcButton label <| labelKey label
 
-labelKey : Model -> String -> Key
-labelKey model label =
+labelKey : String -> Key
+labelKey label =
     case label of
         "C" -> OpKey <| UnOp Clear
         "AC" -> OpKey <| UnOp AllClear
